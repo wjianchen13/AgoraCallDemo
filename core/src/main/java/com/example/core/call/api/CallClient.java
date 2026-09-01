@@ -3,9 +3,21 @@ package com.example.core.call.api;
 import android.view.SurfaceView;
 
 import com.example.core.call.model.CallJoinRequest;
+import com.example.core.call.model.CallInviteRequest;
 import com.example.core.call.model.CallSnapshot;
+import com.example.core.call.model.SignalingLoginRequest;
 
 public interface CallClient {
+    void loginSignaling(SignalingLoginRequest request);
+
+    void logoutSignaling();
+
+    void startCall(CallInviteRequest request);
+
+    void acceptCall();
+
+    void rejectCall();
+
     void join(CallJoinRequest request);
 
     void leave();

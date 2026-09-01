@@ -1,0 +1,182 @@
+云信 V2 信令 + 声网 RTC 1V1 音视频接入说明
+===========================================
+
+一、当前接入结果
+
+本 Demo 已将“呼叫控制”和“媒体传输”拆开：
+
+1. 云信 V2 信令负责：账号登录、发起呼叫、来电通知、接听、拒绝、取消、挂断同步。
+2. 声网 RTC 负责：麦克风、摄像头、远端画面、扬声器、切换摄像头和音视频数据传输。
+3. core 模块负责完整状态机和两个厂商 SDK 的适配。
+4. app 模块只负责账号/Token/UID 输入、权限申请、按钮事件和界面渲染。
+
+呼叫双方不再手工填写同一个声网频道。主叫端在 core 中生成唯一频道名，将该频道名作为云信信令频道名；被叫接听后，双方自动使用同一个频道名加入声网 RTC。
+
+
+二、SDK 依赖
+
+core/build.gradle：
+
+implementation 'com.netease.nimlib:basesdk:10.10.1'
+implementation 'com.netease.nimlib:avsignalling:10.10.1'
+implementation 'io.agora.rtc:agora-special-full:4.1.2.2.BASIC'
+implementation 'io.agora:authentication:2.1.3'
+
+注意：云信 basesdk 和 avsignalling 必须保持相同版本。本次使用 10.10.1。
+
+
+三、需要替换的占位变量
+
+在项目根目录 local.properties 中替换：
+
+YUNXIN_APP_KEY=YOUR_YUNXIN_APP_KEY
+YUNXIN_ACCOUNT_ID=YOUR_YUNXIN_ACCOUNT_ID
+YUNXIN_ACCOUNT_TOKEN=YOUR_YUNXIN_ACCOUNT_TOKEN
+
+说明：
+
+1. YUNXIN_APP_KEY：云信控制台应用的 App Key，两台测试设备必须使用同一个应用。
+2. YUNXIN_ACCOUNT_ID：本机默认显示的云信账号 ID。不同设备必须登录不同账号。
+3. YUNXIN_ACCOUNT_TOKEN：上述云信账号的登录 Token。
+4. 账号 ID 和账号 Token 必须属于该 App Key 对应的应用，否则登录会失败。
+5. Demo 允许在界面中修改账号和 Token，因此同一个 APK 也能在两台设备上输入不同账号测试。
+6. BuildConfig 中只保存 Demo 默认值。正式项目应在业务登录完成后从安全的业务流程取得账号凭据，不应把真实用户 Token 固化在 APK。
+
+
+四、云信控制台和服务端准备
+
+1. 在云信控制台创建或选择应用，获取 App Key。
+2. 确认应用已经开通 IM 和信令相关能力。
+3. 通过云信控制台测试账号能力，或通过云信服务端 API 创建至少两个 IM 账号，例如 user_a、user_b。
+4. 为两个账号配置有效 Token。
+5. 不要在 Android 客户端保存云信 App Secret，也不要在客户端调用需要 App Secret 的服务端接口。
+6. 正式环境由业务服务端创建/维护云信账号，并把当前登录用户对应的账号 ID 和短期或受控 Token 返回给客户端。
+
+
+五、代码结构
+
+初始化：
+
+- app/.../CallDemoApplication.java
+  在 Application.onCreate 中调用 core 的 CallSdkInitializer，传入云信 App Key。
+
+- core/.../api/CallSdkInitializer.java
+  构造 SDKOptions，设置 appKey，并调用 NIMClient.init。
+
+对外通话 API：
+
+- core/.../api/CallClient.java
+  提供 loginSignaling、logoutSignaling、startCall、acceptCall、rejectCall、leave，以及 RTC 控制方法。
+
+- core/.../model/SignalingLoginRequest.java
+  保存本机云信账号、账号 Token 和本机声网 UID。
+
+- core/.../model/CallInviteRequest.java
+  保存被叫云信账号和语音/视频类型。
+
+核心状态机：
+
+- core/.../internal/DefaultCallClient.java
+  负责云信与声网的时序衔接，向 app 输出统一 CallSnapshot。
+
+云信厂商适配：
+
+- core/.../signaling/SignalingClient.java
+  与厂商无关的信令接口。
+
+- core/.../signaling/yunxin/YunxinSignalingClient.java
+  调用 V2NIMLoginService、V2NIMSignallingService，并转换在线、离线和多端信令事件。
+
+UI：
+
+- app/.../MainActivity.java
+  只读取输入、申请麦克风/摄像头权限、调用 CallClient 并渲染状态。
+
+
+六、完整呼叫流程
+
+主叫 A：
+
+1. A 输入自己的云信账号、Token、声网 UID，点击“登录云信”。
+2. core 调用 V2NIMLoginService.login。
+3. A 输入 B 的云信账号，选择视频或语音，点击“发起呼叫”。
+4. core 生成唯一 requestId 和 call_xxx 频道名。
+5. YunxinSignalingClient 调用 V2NIMSignallingService.call。该接口组合完成创建信令房间、主叫加入房间、邀请被叫。
+6. A 等待 ACCEPT、REJECT 或 CANCEL 等信令事件。
+7. 收到 ACCEPT 后，core 为 call_xxx 获取声网测试 Token，并加入声网 RTC 频道。
+
+被叫 B：
+
+1. B 使用另一个云信账号登录。
+2. B 收到 INVITE 信令事件，CallClient 状态变为 RINGING，app 显示“接听/拒绝”。
+3. 点击“接听”后，core 调用 V2NIMSignallingService.callSetup。该接口组合完成被叫加入信令房间和接受邀请。
+4. callSetup 成功后，B 使用同一个 call_xxx 频道名获取声网测试 Token并加入 RTC。
+5. 点击“拒绝”时，core 调用 rejectInvite，不进入 RTC。
+
+结束：
+
+1. 主叫在等待接听时点击“取消呼叫”，core 调用 cancelInvite。
+2. 通话建立后任意一方点击“挂断”，core 调用 leaveRoom 并退出声网频道。
+3. 对方收到 CANCEL_INVITE、REJECT、LEAVE、CLOSE 或 KICK 后退出当前通话并回到 READY。
+
+
+七、两台真机测试步骤
+
+1. 替换 YUNXIN_APP_KEY 后重新构建并安装同一个 APK 到两台真机。
+2. 设备 A 输入账号 user_a 及其 Token；设备 B 输入账号 user_b 及其 Token。
+3. 两台设备的声网 UID 可填 0 让 SDK 自动分配；如手工填写，必须保证同一频道内不重复。
+4. 两台设备分别点击“登录云信”，确认顶部显示“云信已登录，可以发起呼叫”。
+5. A 输入 user_b，点击“发起呼叫”。
+6. B 应显示来电界面，点击“接听”。
+7. 双方自动进入相同声网频道，测试画面、语音、静音、摄像头、扬声器、切换镜头和挂断。
+8. 再测试一次“拒绝”和“等待接听时取消”。
+
+
+八、重要注意事项
+
+1. 三类凭据不能混用：云信 App Key、云信账号 Token、声网 RTC Token 是不同系统的参数。
+2. AGORA_APP_CERT 和云信服务端密钥不能进入正式 APK。本 Demo 的声网本地 Token Builder 仅为本机联调。
+3. 当前 Demo 将云信系统离线事件开关设为 true，但第三方厂商离线推送配置设为 false。应用仍在后台且进程存活时可正常收事件；如果需要应用被杀后也能弹出来电，必须另行接入 FCM/华为/小米/OPPO/vivo 等推送并实现来电通知与前台服务。
+4. 当前 onSyncRoomInfoList 只接收、不恢复进程被杀前的 RTC 通话。正式项目需要定义崩溃恢复、超时、忙线和重复来电策略。
+5. Demo 未加入振铃超时。正式项目建议主叫 30～60 秒未接听时自动 cancelInvite，被叫同时关闭来电页。
+6. 账号 Token 应由业务服务端发放和刷新；不要把 App Secret 下发给客户端。
+7. V2 信令自 Android SDK 10.3.1 起提供；本项目使用稳定的 10.10.1，并保持两个云信依赖版本一致。
+8. 本次按要求没有执行 Gradle 编译。首次同步依赖和编译由你在 Android Studio 中完成。
+
+
+九、常见错误排查
+
+1. 提示 YUNXIN_APP_KEY 未配置：local.properties 仍是 YOUR_YUNXIN_APP_KEY，占位值必须替换后重新构建。
+2. 云信登录失败：检查 App Key、账号 ID、账号 Token 是否属于同一个云信应用；记录错误码并查询云信错误码文档。
+3. 主叫呼叫成功但被叫没有界面：确认被叫已登录、账号拼写正确、两台设备网络可用，并检查应用是否已开通信令能力。
+4. 接听后无音视频：检查声网 App ID/证书、麦克风和摄像头权限、两端 UID 是否冲突，以及两端是否都显示加入同一个 call_xxx 频道。
+5. 应用被杀后收不到来电：这是当前 Demo 未集成第三方离线推送的预期表现，参照云信离线推送文档补齐厂商推送。
+6. release 包信令异常：确认宿主最终混淆配置包含 core/consumer-rules.pro 中的云信 keep 规则。
+7. 登录成功后出现 LoginInfo cannot be cast to Void：云信 10.10.1 的登录接口声明成功回调参数为 Void，但部分运行路径会回传 LoginInfo。本项目已在 YunxinSignalingClient 中使用不触发 Void 强转的兼容回调；不要改回参数类型为 Void 的 Lambda。
+
+
+十、相关官方文档
+
+云信信令产品介绍：
+https://doc.commsease.com/signaling/concept
+
+云信实现呼叫功能（call / callSetup）：
+https://doc.commsease.com/signaling/guide/jE4NjEwMjY?platform=client
+
+云信 Android 信令版本说明：
+https://doc.commsease.com/signaling/concept/DQ0OTg2MTI?platform=client
+
+云信 V2 登录及登出：
+https://doc.commsease.com/messaging2/guide/Dk1MTY4MzA?platform=client
+
+云信 Android SDK 集成与初始化：
+https://doc.commsease.com/en/messaging/guide/DAyOTkwMDQ?platform=android
+
+声网 Android 音视频互动快速开始：
+https://doc.shengwang.cn/doc/rtc/android/get-started/quick-start
+
+Maven Central - basesdk：
+https://central.sonatype.com/artifact/com.netease.nimlib/basesdk
+
+Maven Central - avsignalling：
+https://central.sonatype.com/artifact/com.netease.nimlib/avsignalling

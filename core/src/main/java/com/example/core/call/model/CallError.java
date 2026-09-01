@@ -4,6 +4,7 @@ public final class CallError {
     public enum Domain {
         RTC,
         TOKEN,
+        SIGNALING,
         VALIDATION,
         INTERNAL
     }

@@ -1,10 +1,18 @@
 <resources>
     <string name="app_name">AgoraCallDemo</string>
-    <string name="setup_title">声网 1V1 音视频测试</string>
-    <string name="setup_description">两台设备填写相同频道名即可互通；UID 使用 0 可自动分配。</string>
-    <string name="channel_hint">频道名，例如 test</string>
+    <string name="setup_title">云信信令 + 声网 RTC</string>
+    <string name="setup_description">两台设备使用不同云信账号登录，输入对方账号即可呼叫。声网频道由 core 自动创建。</string>
+    <string name="local_account_hint">本机云信账号 ID</string>
+    <string name="yunxin_token_hint">本机云信账号 Token</string>
+    <string name="peer_account_hint">对方云信账号 ID</string>
     <string name="uid_hint">UID（0 表示自动分配）</string>
-    <string name="token_hint">Token（可选，留空自动获取测试 Token）</string>
+    <string name="login_yunxin">登录云信</string>
+    <string name="logout_yunxin">退出</string>
+    <string name="start_call">发起呼叫</string>
+    <string name="incoming_call">收到云信来电</string>
+    <string name="accept_call">接听</string>
+    <string name="reject_call">拒绝</string>
+    <string name="cancel_call">取消呼叫</string>
     <string name="video_call">开启视频（不勾选则为纯语音）</string>
     <string name="join_channel">加入频道</string>
     <string name="leave_channel">挂断</string>
@@ -15,10 +23,10 @@
     <string name="switch_camera">切换镜头</string>
     <string name="speaker_on">扬声器开</string>
     <string name="speaker_off">扬声器关</string>
-    <string name="status_idle">请输入频道名开始测试</string>
+    <string name="status_idle">请先登录云信账号</string>
     <string name="video_waiting_hint">等待远端视频</string>
     <string name="audio_call_hint">纯语音通话中</string>
-    <string name="token_demo_warning">自动 Token 仅用于本地 Demo，正式环境必须由业务服务端签发。</string>
+    <string name="token_demo_warning">云信账号 Token 应由业务服务端提供；声网 App Certificate 和本地 Token Builder 也仅限 Demo。</string>
     <string name="permission_denied">请授予麦克风和摄像头权限后重试</string>
     <string name="invalid_uid">UID 请输入 0～2147483647 的整数</string>
     <string name="action_settings">Settings</string>

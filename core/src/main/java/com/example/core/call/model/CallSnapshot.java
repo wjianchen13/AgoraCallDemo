@@ -10,6 +10,9 @@ public final class CallSnapshot {
     private final boolean cameraEnabled;
     private final boolean speakerEnabled;
     private final String statusMessage;
+    private final boolean signalingLoggedIn;
+    private final String localAccountId;
+    private final String peerAccountId;
 
     public CallSnapshot(
             CallState state,
@@ -20,7 +23,10 @@ public final class CallSnapshot {
             boolean microphoneEnabled,
             boolean cameraEnabled,
             boolean speakerEnabled,
-            String statusMessage
+            String statusMessage,
+            boolean signalingLoggedIn,
+            String localAccountId,
+            String peerAccountId
     ) {
         this.state = state;
         this.callType = callType;
@@ -31,6 +37,9 @@ public final class CallSnapshot {
         this.cameraEnabled = cameraEnabled;
         this.speakerEnabled = speakerEnabled;
         this.statusMessage = statusMessage;
+        this.signalingLoggedIn = signalingLoggedIn;
+        this.localAccountId = localAccountId;
+        this.peerAccountId = peerAccountId;
     }
 
     public CallState getState() {
@@ -67,5 +76,17 @@ public final class CallSnapshot {
 
     public String getStatusMessage() {
         return statusMessage;
+    }
+
+    public boolean isSignalingLoggedIn() {
+        return signalingLoggedIn;
+    }
+
+    public String getLocalAccountId() {
+        return localAccountId;
+    }
+
+    public String getPeerAccountId() {
+        return peerAccountId;
     }
 }
