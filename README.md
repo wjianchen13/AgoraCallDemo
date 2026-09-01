@@ -4,6 +4,9 @@
 实现音视频互动
 https://doc.shengwang.cn/doc/rtc/android/get-started/quick-start
 
+实现单聊消息收发
+https://doc.commsease.com/messaging/guide/DgyMTYzMDM?platform=android
+
 ## 运行测试
 
 1. 在 `local.properties` 中替换 `YUNXIN_APP_KEY` 占位值。
