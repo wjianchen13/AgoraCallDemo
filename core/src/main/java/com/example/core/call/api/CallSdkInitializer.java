@@ -22,7 +22,10 @@ public final class CallSdkInitializer {
 
         SDKOptions options = new SDKOptions();
         options.appKey = normalizedAppKey;
-        NIMClient.init(context.getApplicationContext(), null, options);
+        // This project uses V2NIMLoginService and V2NIMSignallingService, so the
+        // SDK must run in V2 mode. NIMClient.init(...) initializes the legacy
+        // mode and V2 signalling then fails locally with 191001 (misuse).
+        NIMClient.initV2(context.getApplicationContext(), options);
         yunxinInitialized = true;
     }
 

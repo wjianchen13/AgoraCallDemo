@@ -61,7 +61,7 @@ YUNXIN_ACCOUNT_TOKEN=YOUR_YUNXIN_ACCOUNT_TOKEN
   在 Application.onCreate 中调用 core 的 CallSdkInitializer，传入云信 App Key。
 
 - core/.../api/CallSdkInitializer.java
-  构造 SDKOptions，设置 appKey，并调用 NIMClient.init。
+  构造 SDKOptions，设置 appKey，并调用 NIMClient.initV2。因为项目使用 V2NIMLoginService 和 V2NIMSignallingService，不能使用旧模式的 NIMClient.init。
 
 对外通话 API：
 
@@ -153,6 +153,7 @@ UI：
 5. 应用被杀后收不到来电：这是当前 Demo 未集成第三方离线推送的预期表现，参照云信离线推送文档补齐厂商推送。
 6. release 包信令异常：确认宿主最终混淆配置包含 core/consumer-rules.pro 中的云信 keep 规则。
 7. 登录成功后出现 LoginInfo cannot be cast to Void：云信 10.10.1 的登录接口声明成功回调参数为 Void，但部分运行路径会回传 LoginInfo。本项目已在 YunxinSignalingClient 中使用不触发 Void 强转的兼容回调；不要改回参数类型为 Void 的 Lambda。
+8. 发起呼叫失败 misuse（191001）：表示 V2 API 被运行在旧 SDK 模式。本项目已统一改用 NIMClient.initV2；修改后必须重新构建并彻底结束旧 App 进程再启动，确保 SDK 按 V2 模式重新初始化。
 
 
 十、相关官方文档
