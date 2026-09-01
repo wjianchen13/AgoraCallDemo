@@ -2,4 +2,9 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="call_background">#101820</color>
+    <color name="local_video_background">#263642</color>
+    <color name="call_text_secondary">#B8C2CC</color>
+    <color name="setup_text_secondary">#5F6B76</color>
+    <color name="hangup_red">#C62828</color>
 </resources>

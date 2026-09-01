@@ -2,6 +2,14 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file("local.properties")
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withInputStream { localProperties.load(it) }
+}
+def agoraAppId = localProperties.getProperty("AGORA_APP_ID", "")
+def agoraAppCert = localProperties.getProperty("AGORA_APP_CERT", "")
+
 android {
     namespace 'com.example.agoracalldemo'
     compileSdk {
@@ -16,6 +24,10 @@ android {
         targetSdk 36
         versionCode 1
         versionName "1.0"
+
+        // Demo only. AGORA_APP_CERT must be moved to a server before production.
+        buildConfigField "String", "AGORA_APP_ID", "\"${agoraAppId}\""
+        buildConfigField "String", "AGORA_APP_CERT", "\"${agoraAppCert}\""
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -33,6 +45,7 @@ android {
     }
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
 }
 
