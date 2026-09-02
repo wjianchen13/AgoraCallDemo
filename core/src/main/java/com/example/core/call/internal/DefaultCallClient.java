@@ -82,6 +82,7 @@ public final class DefaultCallClient implements
     private void loginSignalingOnMain(SignalingLoginRequest request) {
         if (released) {
             reportError(new CallError(CallError.Domain.INTERNAL, -1, "CallClient 已释放"));
+            
             return;
         }
         if (signalingClient == null) {
