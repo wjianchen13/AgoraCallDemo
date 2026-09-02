@@ -1,0 +1,1064 @@
+声网 RTC Android 1V1 音视频接入文档
+==================================
+
+文档适用范围
+------------
+
+本文档基于当前 AgoraCallDemo 项目的实际代码编写，描述声网 RTC 在 Android 端的接入方式、模块划分、Token 处理、频道加入、音视频控制、事件回调、云信信令衔接、测试步骤和生产环境注意事项。
+
+当前项目采用以下职责划分：
+
+1. 声网 RTC：负责实时音频采集、视频采集、音视频发布、订阅、播放和网络连接。
+2. 云信 V2 信令：负责呼叫、来电、接听、拒绝、取消和挂断通知。
+3. core 模块：封装声网 SDK、Token Provider 和完整通话状态机。
+4. app 模块：负责权限申请、SurfaceView 创建、用户输入、按钮事件和界面渲染。
+
+声网本身不负责“拨号”和“来电弹窗”。两端能否进入同一个音视频通话，关键是双方最终使用相同的频道名、相同的声网 App ID，以及有效且匹配的 RTC Token。
+
+
+一、当前使用的 SDK
+------------------
+
+依赖位置：core/build.gradle
+
+当前依赖如下：
+
+implementation 'io.agora.rtc:agora-special-full:4.1.2.2.BASIC'
+implementation 'io.agora:authentication:2.1.3'
+
+依赖说明：
+
+1. agora-special-full
+   声网 Android RTC SDK，提供 RtcEngine、频道加入、音视频采集、编码、渲染和网络回调等能力。
+
+2. authentication
+   声网官方 Token Builder。本项目使用其中的 RtcTokenBuilder2，在 Demo 客户端本地生成测试 Token。
+
+3. 当前 minSdk 为 24，Java 编译版本为 11。
+
+4. SDK 放在 core 模块中，app 模块只依赖 project(':core')，不会直接引用 io.agora.rtc2 下的业务接口。
+
+
+二、声网控制台准备
+------------------
+
+接入前需要在声网控制台完成以下准备：
+
+1. 创建声网项目。
+2. 获取该项目的 App ID。
+3. 确认项目采用哪种鉴权方式：
+   - 未启用 App Certificate：测试时可使用空 Token 加入频道。
+   - 已启用 App Certificate：必须使用 App ID、App Certificate、频道名和 UID 生成匹配的 RTC Token。
+4. App ID 可以下发到客户端，但 App Certificate 属于服务端密钥，正式应用不能放在 APK 中。
+5. 两台测试设备必须使用同一个声网项目的 App ID。
+
+
+三、本项目的配置方式
+--------------------
+
+配置文件：项目根目录 local.properties
+
+使用的变量：
+
+AGORA_APP_ID=YOUR_AGORA_APP_ID
+AGORA_APP_CERT=YOUR_AGORA_APP_CERT
+
+说明：
+
+1. AGORA_APP_ID
+   声网项目 App ID，用于创建 RtcEngine 和 RTC Token。
+
+2. AGORA_APP_CERT
+   声网项目 App Certificate，仅用于当前本地 Demo 生成 Token。
+   如果声网项目未启用证书鉴权，可以留空。
+
+3. local.properties 已在 .gitignore 中忽略，通常不会提交到 Git。
+
+4. app/build.gradle 会读取这两个配置，并生成：
+
+BuildConfig.AGORA_APP_ID
+BuildConfig.AGORA_APP_CERT
+
+5. MainActivity 创建 CallClient 时将配置传给 core：
+
+CallClientFactory.createDemoClient(
+        getApplicationContext(),
+        BuildConfig.AGORA_APP_ID,
+        BuildConfig.AGORA_APP_CERT,
+        BuildConfig.YUNXIN_APP_KEY
+);
+
+6. 不要把 App Certificate 写入 strings.xml、AndroidManifest.xml、Java 常量或可提交的 Gradle 文件。
+
+
+四、Android 权限
+----------------
+
+权限位置：app/src/main/AndroidManifest.xml
+
+当前声明的主要权限：
+
+android.permission.INTERNET
+android.permission.CAMERA
+android.permission.RECORD_AUDIO
+android.permission.MODIFY_AUDIO_SETTINGS
+android.permission.ACCESS_NETWORK_STATE
+android.permission.ACCESS_WIFI_STATE
+android.permission.BLUETOOTH
+android.permission.BLUETOOTH_CONNECT
+
+权限用途：
+
+1. INTERNET
+   连接声网服务和云信服务。
+
+2. RECORD_AUDIO
+   采集麦克风音频。语音和视频通话都需要。
+
+3. CAMERA
+   采集本地视频。只有视频通话需要。
+
+4. MODIFY_AUDIO_SETTINGS
+   设置扬声器、听筒等音频路由。
+
+5. ACCESS_NETWORK_STATE / ACCESS_WIFI_STATE
+   用于网络状态判断和 RTC 网络能力。
+
+6. BLUETOOTH_CONNECT
+   Android 12 及以上连接蓝牙耳机等设备时使用。
+
+MainActivity 会在发起呼叫或接听前动态申请权限：
+
+- 所有通话申请 RECORD_AUDIO。
+- 视频通话额外申请 CAMERA。
+- Android 12 及以上额外申请 BLUETOOTH_CONNECT。
+
+权限没有授予时，不会继续发起 RTC 加入操作。
+
+
+五、代码结构和类职责
+--------------------
+
+1. core/call/rtc/RtcClient.java
+
+与厂商无关的 RTC 接口，定义：
+
+- initialize：初始化 RTC 引擎。
+- join：加入 RTC 频道。
+- leave：离开 RTC 频道。
+- renewToken：更新即将过期或已失效的 Token。
+- setMicrophoneEnabled：打开或关闭本地麦克风。
+- setCameraEnabled：打开或关闭本地摄像头。
+- switchCamera：切换前后摄像头。
+- setSpeakerEnabled：切换扬声器状态。
+- attachLocalVideo：绑定本地视频 SurfaceView。
+- attachRemoteVideo：绑定远端视频 SurfaceView。
+- release：销毁引擎并释放资源。
+
+这样设计后，DefaultCallClient 不直接依赖声网的具体 UI，实现上也便于后续替换 RTC 厂商。
+
+
+2. core/call/rtc/RtcJoinParams.java
+
+加入 RTC 频道需要的统一参数：
+
+- channelName：声网频道名。
+- token：RTC Token。
+- uid：本地声网 UID。
+- callType：AUDIO 或 VIDEO。
+
+
+3. core/call/rtc/agora/AgoraRtcClient.java
+
+声网 SDK 的具体适配类，内部持有 RtcEngine，并将声网事件转换为 RtcClientListener 回调。
+
+主要职责：
+
+- 创建和配置 RtcEngine。
+- 配置音频、视频、发布和订阅选项。
+- 管理本地、远端 SurfaceView。
+- 处理用户加入、离开、静音、网络和 Token 事件。
+- 将 SDK 回调切换到 Android 主线程。
+- 在后台线程安全调用 RtcEngine.destroy()。
+
+
+4. core/call/rtc/RtcClientListener.java
+
+向 DefaultCallClient 输出以下 RTC 事件：
+
+- onJoinSuccess
+- onRemoteUserJoined
+- onRemoteUserLeft
+- onConnectionStateChanged
+- onRemoteAudioMuted
+- onRemoteVideoMuted
+- onTokenWillExpire
+- onTokenRequired
+- onError
+
+
+5. core/call/token/RtcTokenProvider.java
+
+Token 获取抽象。DefaultCallClient 只依赖这个接口，不关心 Token 来自本地 Builder 还是业务服务端。
+
+正式环境可以新增 ServerRtcTokenProvider，实现同一个接口，通过 HTTPS 调用业务 Token 服务。
+
+
+6. core/call/token/AgoraDemoTokenProvider.java
+
+当前 Demo Token 实现：
+
+- 使用 RtcTokenBuilder2。
+- 使用 UID 方式生成 Token。
+- 角色为 ROLE_PUBLISHER。
+- Token 有效期为 3600 秒。
+- 权限有效期为 3600 秒。
+- Token 生成放在单线程 ExecutorService 中，避免阻塞主线程。
+- AGORA_APP_CERT 为空时返回空 Token。
+
+该类只能用于 Demo，不能用于生产环境。
+
+
+7. core/call/internal/DefaultCallClient.java
+
+通话核心状态机，负责衔接云信信令、声网 Token 和声网 RTC。
+
+与 RTC 相关的主要流程：
+
+- 校验 App ID 和频道名。
+- 保存频道名、UID、通话类型。
+- 初始化 AgoraRtcClient。
+- 获取或生成 Token。
+- 构造 RtcJoinParams 并加入频道。
+- 接收 RTC 回调并更新 CallSnapshot。
+- Token 即将过期时自动重新获取并调用 renewToken。
+- 挂断或失败时离开 RTC 频道并重置会话数据。
+
+
+8. core/call/api/CallClient.java
+
+app 层唯一需要使用的通话接口。RTC 控制方法包括：
+
+- join
+- leave
+- setMicrophoneEnabled
+- setCameraEnabled
+- switchCamera
+- setSpeakerEnabled
+- attachLocalVideo
+- attachRemoteVideo
+
+当前正常 UI 流程通过云信发起呼叫和接听，接通后由 core 自动加入声网；join 方法保留为不经过信令的 RTC 调试入口。
+
+
+9. app/MainActivity.java
+
+只负责：
+
+- 创建本地和远端 SurfaceView。
+- 将 SurfaceView 交给 CallClient。
+- 申请录音、摄像头和蓝牙权限。
+- 调用 CallClient 发起、接听和控制通话。
+- 根据 CallSnapshot 更新按钮、提示文字和视频容器可见性。
+
+
+六、RtcEngine 初始化
+--------------------
+
+初始化代码位于 AgoraRtcClient.initialize。
+
+主要配置如下：
+
+RtcEngineConfig config = new RtcEngineConfig();
+config.mContext = appContext;
+config.mAppId = appId;
+config.mChannelProfile = Constants.CHANNEL_PROFILE_LIVE_BROADCASTING;
+config.mEventHandler = eventHandler;
+engine = RtcEngine.create(config);
+
+随后执行：
+
+engine.setClientRole(Constants.CLIENT_ROLE_BROADCASTER);
+engine.setDefaultAudioRoutetoSpeakerphone(true);
+
+配置含义：
+
+1. 使用 Application Context，避免持有 Activity 导致内存泄漏。
+2. 使用直播频道模式 CHANNEL_PROFILE_LIVE_BROADCASTING。
+3. 1V1 双方都设置为 CLIENT_ROLE_BROADCASTER，因此双方都能发布音频和视频。
+4. 默认使用扬声器播放声音。
+5. initialize 具有幂等处理，engine 已创建时不会重复创建。
+
+
+七、频道名和 UID
+----------------
+
+1. 频道名
+
+正常呼叫时，主叫在 DefaultCallClient 中生成：
+
+call_ + 去掉连字符的 UUID
+
+示例形式：
+
+call_1234567890abcdef1234567890abcdef
+
+这个频道名同时作为云信信令频道名和声网 RTC 频道名。被叫从云信 INVITE/callSetup 的频道信息中获得相同名称，因此双方不需要手工输入频道。
+
+2. UID
+
+- UI 可填写 0～2147483647。
+- 填 0 时由声网 SDK 自动分配本地 UID。
+- 手工填写时，同一个频道内两端 UID 必须不同。
+- onJoinChannelSuccess 返回最终本地 UID，DefaultCallClient 会保存到 localUid。
+- Token 生成和续签必须使用与当前加入方式一致的 UID。
+
+3. 两端进入同一通话的必要条件
+
+- App ID 相同。
+- channelName 完全相同，区分大小写。
+- 两端 Token 都对应同一个 App ID 和频道名。
+- 如果 Token 绑定 UID，则 Token 中 UID 必须和加入频道使用的 UID 匹配。
+- 两端 UID 不能冲突。
+
+
+八、Token 生成和使用
+--------------------
+
+当前 Demo 的生成逻辑：
+
+RtcTokenBuilder2 tokenBuilder = new RtcTokenBuilder2();
+
+tokenBuilder.buildTokenWithUid(
+        appId,
+        appCertificate,
+        channelName,
+        uid,
+        RtcTokenBuilder2.Role.ROLE_PUBLISHER,
+        3600,
+        3600
+);
+
+参数说明：
+
+1. appId
+   声网项目 App ID。
+
+2. appCertificate
+   声网项目证书。
+
+3. channelName
+   本次通话使用的 RTC 频道。
+
+4. uid
+   本地加入频道使用的 UID。
+
+5. ROLE_PUBLISHER
+   允许发布音频和视频。
+
+6. 3600
+   Token 和权限有效期均为 1 小时。
+
+DefaultCallClient 的 Token 选择顺序：
+
+1. CallJoinRequest 中存在手工 Token时，直接使用。
+2. 手工 Token 为空时，调用 RtcTokenProvider。
+3. App Certificate 不为空时，AgoraDemoTokenProvider 本地生成测试 Token。
+4. App Certificate 为空时，Provider 返回空字符串；AgoraRtcClient 会把空字符串转换为 null 后加入频道。
+
+只有未启用证书鉴权的项目才能使用 null Token。项目启用证书后，空 Token 会导致加入失败。
+
+
+九、生产环境 Token 方案
+----------------------
+
+正式环境必须将 Token Builder 放到业务服务端，推荐流程如下：
+
+1. 客户端向业务服务端请求 RTC Token。
+2. 请求中至少包含：业务用户身份、频道名、RTC UID、通话 ID。
+3. 服务端校验当前用户是否有权加入该通话。
+4. 服务端从安全配置读取 App ID 和 App Certificate。
+5. 服务端使用官方 Token Builder 生成短期 RTC Token。
+6. 服务端通过 HTTPS 返回 Token 和过期时间。
+7. 客户端调用 RtcClient.join。
+8. 收到 Token 即将过期回调时，客户端重新请求服务端并调用 renewToken。
+
+安全要求：
+
+- App Certificate 只能保存在业务服务端或密钥管理系统。
+- 不要把 App Certificate 打进 APK。
+- 不要仅凭客户端传入的频道名就签发 Token，服务端必须校验通话成员关系。
+- Token 有效期不宜过长。
+- 建议记录签发用户、频道、UID、通话 ID 和过期时间，便于审计和排查。
+- 建议业务服务端限制用户只能加入当前有效的1V1通话频道。
+
+迁移方式：
+
+新增一个实现 RtcTokenProvider 的 ServerRtcTokenProvider，然后在 CallClientFactory 中用它替换 AgoraDemoTokenProvider。DefaultCallClient 和 app UI 无需因为 Token 来源变化而重写。
+
+
+十、加入 RTC 频道流程
+--------------------
+
+完整流程如下：
+
+1. 云信信令完成接听：
+   - 主叫收到 ACCEPT。
+   - 被叫 callSetup 成功。
+
+2. DefaultCallClient.startRtcForSignalingSession 读取：
+   - rtcChannelName
+   - 本机 RTC UID
+   - AUDIO 或 VIDEO 类型
+
+3. 构造 CallJoinRequest，并进入 beginRtcJoin。
+
+4. beginRtcJoin：
+   - 校验 AGORA_APP_ID。
+   - 保存频道名、UID 和通话类型。
+   - 重置 localUid、remoteUid。
+   - 初始化 RTC 引擎。
+   - 获取测试 Token。
+
+5. joinWithToken 将状态更新为 JOINING，并调用：
+
+rtcClient.join(new RtcJoinParams(
+        channelName,
+        token,
+        requestedUid,
+        callType
+));
+
+6. AgoraRtcClient.join 配置音视频并调用 RtcEngine.joinChannel。
+
+7. onJoinChannelSuccess：
+   - 保存本地 UID。
+   - 远端尚未加入时进入 WAITING_REMOTE。
+   - 远端已经存在时进入 CONNECTED。
+
+8. onUserJoined：
+   - 保存远端 UID。
+   - 视频通话绑定远端 SurfaceView。
+   - 状态更新为 CONNECTED。
+
+
+十一、音频配置
+--------------
+
+加入频道前始终执行：
+
+engine.enableAudio();
+
+ChannelMediaOptions 的音频设置：
+
+options.autoSubscribeAudio = true;
+options.publishMicrophoneTrack = true;
+
+含义：
+
+- 自动订阅远端音频。
+- 发布本地麦克风音轨。
+
+麦克风开关实现：
+
+engine.enableLocalAudio(enabled);
+engine.muteLocalAudioStream(!enabled);
+
+同时控制本地音频采集和发送状态。
+
+扬声器开关实现：
+
+engine.setEnableSpeakerphone(enabled);
+
+注意：
+
+- 当前“扬声器关”主要切换系统音频路由，不代表静音远端声音。
+- 蓝牙耳机、系统音频焦点、厂商 ROM 和接近传感器可能影响最终路由。
+- 如正式产品需要精细处理听筒、扬声器、有线耳机和蓝牙设备，应增加音频设备状态监听和路由策略。
+
+
+十二、视频配置
+--------------
+
+视频通话时执行：
+
+engine.enableVideo();
+
+当前编码参数：
+
+- 分辨率：640 × 360。
+- 帧率：15 FPS。
+- 码率：STANDARD_BITRATE，由 SDK 根据分辨率和帧率选择推荐码率。
+- 方向模式：ORIENTATION_MODE_ADAPTIVE。
+
+配置代码：
+
+engine.setVideoEncoderConfiguration(new VideoEncoderConfiguration(
+        new VideoEncoderConfiguration.VideoDimensions(640, 360),
+        VideoEncoderConfiguration.FRAME_RATE.FRAME_RATE_FPS_15,
+        VideoEncoderConfiguration.STANDARD_BITRATE,
+        VideoEncoderConfiguration.ORIENTATION_MODE.ORIENTATION_MODE_ADAPTIVE
+));
+
+然后：
+
+1. setupLocalVideo 绑定本地 SurfaceView。
+2. startPreview 开启本地预览。
+3. publishCameraTrack = true，发布摄像头视频。
+4. autoSubscribeVideo = true，自动订阅远端视频。
+
+纯语音通话时：
+
+- engine.disableVideo()。
+- publishCameraTrack = false。
+- UI 隐藏摄像头和切换镜头按钮。
+
+摄像头开关实现：
+
+engine.enableLocalVideo(enabled);
+engine.muteLocalVideoStream(!enabled);
+
+切换摄像头实现：
+
+engine.switchCamera();
+
+
+十三、视频画面绑定
+------------------
+
+MainActivity 创建两个 SurfaceView：
+
+1. remoteView
+   全屏远端画面，添加到 remoteVideoContainer。
+
+2. localView
+   右上角本地小窗，调用 setZOrderMediaOverlay(true)，添加到 localVideoContainer。
+
+随后调用：
+
+callClient.attachLocalVideo(localView);
+callClient.attachRemoteVideo(remoteView);
+
+本地画面绑定：
+
+engine.setupLocalVideo(new VideoCanvas(
+        localVideoView,
+        VideoCanvas.RENDER_MODE_HIDDEN,
+        0
+));
+
+远端画面绑定：
+
+engine.setupRemoteVideo(new VideoCanvas(
+        remoteVideoView,
+        VideoCanvas.RENDER_MODE_HIDDEN,
+        remoteUid
+));
+
+RENDER_MODE_HIDDEN 会保持比例并裁剪超出容器的画面，适合全屏通话界面。如果产品要求完整显示且允许留黑边，可改成其他渲染模式。
+
+远端用户离开、主动 leave 或 release 时，代码会用 null Surface 清理本地和远端 VideoCanvas，防止旧画面残留。
+
+
+十四、ChannelMediaOptions
+-----------------------
+
+当前加入频道配置：
+
+options.channelProfile = Constants.CHANNEL_PROFILE_LIVE_BROADCASTING;
+options.clientRoleType = Constants.CLIENT_ROLE_BROADCASTER;
+options.autoSubscribeAudio = true;
+options.autoSubscribeVideo = true;
+options.publishMicrophoneTrack = true;
+options.publishCameraTrack = videoCall;
+
+对于1V1场景：
+
+- 两端都发布麦克风。
+- 视频通话两端都发布摄像头。
+- 两端自动订阅对方音频。
+- 两端自动订阅对方视频。
+- 两端都是主播角色。
+
+如果未来扩展为观众模式、多方会议或屏幕共享，需要按角色和媒体来源重新配置这些选项。
+
+
+十五、RTC 事件处理
+------------------
+
+1. onJoinChannelSuccess
+
+表示本地已成功加入频道。返回最终 uid，并将状态切换为 WAITING_REMOTE 或 CONNECTED。
+
+2. onUserJoined
+
+表示远端用户加入。保存 remoteUid，视频通话绑定远端画面，状态切换为 CONNECTED。
+
+3. onUserOffline
+
+表示远端用户离开。清理远端画面并通知状态机。
+
+当前1V1信令通话中，远端离开 RTC 会直接结束本次通话；直接 RTC 调试模式下则回到 WAITING_REMOTE。
+
+4. onConnectionStateChanged
+
+- CONNECTION_STATE_RECONNECTING：状态切换为 RECONNECTING。
+- 重连后 CONNECTION_STATE_CONNECTED：根据远端是否存在恢复 WAITING_REMOTE 或 CONNECTED。
+- CONNECTION_STATE_FAILED：生成 RTC 错误并结束当前 RTC 会话。
+
+5. onUserMuteAudio
+
+提示对方打开或关闭麦克风。
+
+6. onUserMuteVideo
+
+提示对方打开或关闭摄像头。
+
+7. onTokenPrivilegeWillExpire
+
+Token 即将过期，通知 DefaultCallClient 提前续签。
+
+8. onRequestToken
+
+SDK 需要新 Token，通知 DefaultCallClient 续签。
+
+9. onError
+
+将声网错误码转换为 CallError.Domain.RTC，并附带 RtcEngine.getErrorDescription 的错误说明。
+
+所有声网事件最终通过 Handler 切换到 Android 主线程，再修改通话状态或通知 UI。
+
+
+十六、Token 续签
+----------------
+
+续签入口：
+
+- onTokenPrivilegeWillExpire
+- onRequestToken
+
+DefaultCallClient.renewToken 的处理：
+
+1. 确认当前仍在 RTC 频道中。
+2. 使用当前 channelName 和最终 localUid 请求新 Token。
+3. 获取成功后调用：
+
+rtcClient.renewToken(token);
+
+4. renewToken 返回非 0 时，通过 CallListener 报告错误。
+
+生产环境 Token 服务必须允许根据同一个频道名和最终 UID 续签。不能在续签时换成另一个 UID 或频道名。
+
+
+十七、离开频道与资源释放
+------------------------
+
+RtcClient.leave：
+
+- stopPreview。
+- leaveChannel。
+- 解绑远端 VideoCanvas。
+- 解绑本地 VideoCanvas。
+- remoteUid 重置为 0。
+
+CallClient.release：
+
+- 结束可能存在的信令会话。
+- 释放 RTC Client。
+- 释放 Token Provider。
+- 移除监听器。
+- 重置会话状态。
+
+AgoraRtcClient.release：
+
+- 清除对 Context 以外的视图和监听器引用。
+- 停止预览并离开频道。
+- 使用单独线程执行 RtcEngine.destroy()。
+
+RtcEngine.destroy() 不在声网事件回调线程中直接执行，避免阻塞或死锁风险。
+
+
+十八、CallState 与 RTC 的关系
+----------------------------
+
+RTC 相关状态：
+
+PREPARING
+正在初始化引擎或获取 Token。
+
+JOINING
+已经调用 joinChannel，等待加入成功。
+
+WAITING_REMOTE
+本地已加入，但远端用户尚未进入频道。
+
+CONNECTED
+本地和远端都在频道中。
+
+RECONNECTING
+RTC 网络连接异常，SDK 正在重连。
+
+LEAVING
+正在结束通话或离开频道。
+
+FAILED
+初始化、Token 或 RTC 操作失败。当前已登录云信时，部分 RTC 失败会回到 READY，允许重新呼叫。
+
+UI 不直接判断 RtcEngine 状态，而是根据 CallSnapshot.state 渲染界面。
+
+
+十九、与云信信令的衔接
+----------------------
+
+本项目采用“云信管呼叫，声网管媒体”的方案。
+
+主叫流程：
+
+1. 输入被叫云信账号。
+2. core 生成唯一声网频道名。
+3. 云信 call 创建信令房间并邀请对方。
+4. 被叫接听后，主叫收到 ACCEPT。
+5. 主叫使用该频道名获取声网 Token并加入 RTC。
+
+被叫流程：
+
+1. 收到云信 INVITE。
+2. 用户点击接听。
+3. 云信 callSetup 成功。
+4. 从信令会话读取同一个频道名。
+5. 被叫获取自己的声网 Token并加入同一 RTC 频道。
+
+挂断流程：
+
+1. 本端离开声网 RTC。
+2. 本端通过云信 leaveRoom 通知对方。
+3. 对方收到信令挂断事件后退出自己的 RTC 频道。
+
+注意：
+
+- 云信账号 ID 与声网 UID 是两个独立概念。
+- 云信账号 Token 不能当作声网 RTC Token。
+- 云信 App Key 不能当作声网 App ID。
+- 声网频道名被放在 SignalingSession.rtcChannelName 中传递。
+
+
+二十、直接 RTC 调试模式
+----------------------
+
+CallClient 仍保留：
+
+join(CallJoinRequest request)
+
+该接口可不经过云信信令，直接用频道名、UID、通话类型和可选 Token 加入声网频道。
+
+用途：
+
+- 单独排查声网 RTC 是否正常。
+- 验证 App ID、证书和 Token。
+- 排除云信信令对测试结果的影响。
+
+当前 app 界面以完整云信呼叫流程为主，没有暴露手工频道输入框。如需使用直接 RTC 调试，可临时增加调试入口，但正式 UI 不建议让用户手工填写频道名。
+
+
+二十一、两台真机测试步骤
+------------------------
+
+准备条件：
+
+- 两台 Android 真机。
+- 同一个声网 App ID。
+- 如果项目启用证书，配置正确的 App Certificate 或业务 Token 服务。
+- 两个不同的云信账号。
+- 两台设备网络正常。
+
+测试步骤：
+
+1. 在 local.properties 配置 AGORA_APP_ID 和 Demo 用 AGORA_APP_CERT。
+2. 构建并安装 APK 到两台真机。
+3. 设备 A 登录云信账号 test01。
+4. 设备 B 登录云信账号 test02。
+5. 两台设备的声网 UID 可都填 0，让 SDK 自动分配；如果手填则必须不同。
+6. A 输入 test02，选择视频通话并发起呼叫。
+7. B 点击接听。
+8. 两端应依次显示：准备引擎、生成 Token、加入频道、等待远端、音视频已连接。
+9. 验证：
+   - 双向声音。
+   - 双向视频。
+   - 麦克风开关。
+   - 摄像头开关。
+   - 前后摄像头切换。
+   - 扬声器切换。
+   - 一方挂断后另一方退出。
+10. 再取消勾选视频，测试纯语音通话。
+
+建议测试组合：
+
+- Wi-Fi 对 Wi-Fi。
+- Wi-Fi 对 4G/5G。
+- 弱网后恢复。
+- 锁屏/切后台再返回。
+- 蓝牙耳机连接与断开。
+- 摄像头或麦克风权限拒绝。
+- Token 即将过期和续签。
+
+
+二十二、常见问题排查
+--------------------
+
+1. AGORA_APP_ID 未配置
+
+现象：界面提示 AGORA_APP_ID 未配置。
+
+检查：
+
+- local.properties 是否存在 AGORA_APP_ID。
+- 修改配置后是否重新构建 APK。
+- app/build.gradle 是否正确生成 BuildConfig.AGORA_APP_ID。
+
+
+2. 初始化 RTC 失败
+
+检查：
+
+- App ID 是否正确。
+- 依赖是否成功下载。
+- APK 是否包含设备 ABI 对应的声网 so。
+- 是否重复初始化或在错误线程销毁引擎。
+- 查看完整异常信息和 Logcat。
+
+
+3. 加入频道失败或 Invalid Token
+
+检查：
+
+- 声网项目是否启用了 App Certificate。
+- App ID 与 App Certificate 是否属于同一个项目。
+- Token 中的频道名是否和 joinChannel 完全一致。
+- Token 中的 UID 是否和 joinChannel UID 一致。
+- Token 是否已过期。
+- 两台设备是否误用了不同声网项目。
+
+
+4. Token service HTTP 400
+
+旧方案曾通过外部测试 Token 服务获取 Token，返回过 HTTP 400。当前项目已改为 AgoraDemoTokenProvider 使用官方 RtcTokenBuilder2 本地生成测试 Token，不再依赖该外部测试服务。
+
+如果仍看到“Token service HTTP 400”，说明设备运行的可能是旧 APK，应卸载后重新安装当前版本。
+
+
+5. 有声音但没有视频
+
+检查：
+
+- 通话类型是否为 VIDEO。
+- CAMERA 权限是否已授予。
+- cameraEnabled 是否为 true。
+- publishCameraTrack 是否为 true。
+- 对方是否关闭摄像头。
+- SurfaceView 是否已经 attach。
+- 本地和远端视频容器是否可见。
+
+
+6. 有视频但没有声音
+
+检查：
+
+- RECORD_AUDIO 权限。
+- microphoneEnabled 是否为 true。
+- publishMicrophoneTrack 是否为 true。
+- 系统麦克风是否被其他应用占用。
+- 对方是否关闭麦克风。
+- 系统音量、扬声器、听筒和蓝牙路由。
+
+
+7. 两台设备一直“等待对方进入频道”
+
+检查：
+
+- 双方 channelName 是否完全相同。
+- 双方 App ID 是否相同。
+- 双方 Token 是否分别匹配相同频道。
+- 是否有一端加入失败但 UI 未观察到 Toast。
+- 手工 UID 是否重复。
+- 云信会话传递的 rtcChannelName 是否为空或被修改。
+
+
+8. UID 冲突
+
+同一个频道的两个客户端不能使用相同的非零 UID。测试时推荐填 0 自动分配，或为两端配置不同整数。
+
+
+9. Token 过期后断开
+
+检查：
+
+- 是否收到 onTokenPrivilegeWillExpire 或 onRequestToken。
+- RtcTokenProvider 是否成功返回新 Token。
+- 新 Token 是否使用当前 channelName 和最终 localUid。
+- renewToken 返回值是否为 0。
+
+
+10. 退出后旧画面残留
+
+确认 leave 时执行：
+
+- stopPreview。
+- leaveChannel。
+- setupRemoteVideo(null Canvas)。
+- setupLocalVideo(null Canvas)。
+
+
+11. release 包异常
+
+core/consumer-rules.pro 已包含：
+
+-keep class io.agora.** { *; }
+-dontwarn io.agora.**
+
+确认宿主最终打包时没有覆盖或遗漏 consumer ProGuard 规则。
+
+
+12. 模拟器异常
+
+音视频采集、摄像头、蓝牙路由和厂商 so 在模拟器上的行为与真机可能不同。最终联调应以两台真机结果为准。
+
+
+二十三、日志和错误信息建议
+--------------------------
+
+当前错误会通过 CallError 输出：
+
+- Domain.RTC：声网引擎和频道错误。
+- Domain.TOKEN：Token 生成或获取错误。
+- Domain.VALIDATION：App ID、频道名等输入错误。
+- Domain.SIGNALING：云信信令错误。
+
+正式项目建议额外记录：
+
+- 通话 ID。
+- channelName 的脱敏摘要。
+- 本地和远端 UID。
+- 加入频道开始时间、成功时间、耗时。
+- 网络连接状态和原因码。
+- Token 签发时间、过期时间，不记录完整 Token。
+- onUserJoined/onUserOffline 时间。
+- 主动挂断、远端挂断、网络失败等结束原因。
+
+不要把完整 App Certificate、完整 RTC Token 或用户隐私信息写入日志。
+
+
+二十四、当前 Demo 的限制
+------------------------
+
+1. App Certificate 仍在客户端 local.properties 构建链路中，仅适合 Demo。
+2. 没有正式业务服务端 Token API。
+3. 没有完整音频设备管理器。
+4. 没有通话超时计时器。
+5. 没有通话质量统计页面。
+6. 没有弱网 UI、网络质量提示和降级策略。
+7. 没有屏幕共享。
+8. 只按1V1场景保存一个 remoteUid。
+9. 没有处理多个远端用户同时进入频道的业务约束。
+10. 没有通话录制、内容审核、服务端频道管控。
+11. 应用进程被杀后的来电恢复属于云信离线推送能力，不是声网 RTC 本身负责的功能。
+
+
+二十五、正式环境改造清单
+------------------------
+
+上线前至少完成：
+
+1. 删除客户端 AGORA_APP_CERT。
+2. 实现服务端 RTC Token 签发接口。
+3. 用 ServerRtcTokenProvider 替换 AgoraDemoTokenProvider。
+4. 在服务端校验通话成员和频道权限。
+5. 增加 Token 续签失败的重试和用户提示。
+6. 增加呼叫超时和 RTC 加入超时。
+7. 增加音频焦点、耳机、蓝牙和听筒路由管理。
+8. 增加网络质量、首帧、卡顿和异常监控。
+9. 增加前后台、锁屏和 Activity 重建处理。
+10. 增加隐私政策、权限用途说明和合规检查。
+11. 对频道名和 UID 制定稳定的服务端规则。
+12. 根据业务需要配置内容安全、录制和质量监控。
+13. 验证 release 混淆、ABI、包体积和各 Android 版本兼容性。
+
+
+二十六、主要文件索引
+--------------------
+
+SDK 依赖：
+core/build.gradle
+
+BuildConfig 配置：
+app/build.gradle
+
+Android 权限：
+app/src/main/AndroidManifest.xml
+
+RTC 抽象：
+core/src/main/java/com/example/core/call/rtc/RtcClient.java
+
+RTC 加入参数：
+core/src/main/java/com/example/core/call/rtc/RtcJoinParams.java
+
+RTC 回调：
+core/src/main/java/com/example/core/call/rtc/RtcClientListener.java
+
+声网适配实现：
+core/src/main/java/com/example/core/call/rtc/agora/AgoraRtcClient.java
+
+Token 抽象：
+core/src/main/java/com/example/core/call/token/RtcTokenProvider.java
+
+Demo Token Builder：
+core/src/main/java/com/example/core/call/token/AgoraDemoTokenProvider.java
+
+通话核心状态机：
+core/src/main/java/com/example/core/call/internal/DefaultCallClient.java
+
+core 对外 API：
+core/src/main/java/com/example/core/call/api/CallClient.java
+
+core 创建入口：
+core/src/main/java/com/example/core/call/api/CallClientFactory.java
+
+app UI：
+app/src/main/java/com/example/agoracalldemo/MainActivity.java
+
+混淆规则：
+core/consumer-rules.pro
+
+
+二十七、相关官方文档
+--------------------
+
+声网 Android 实现音视频互动快速开始：
+https://doc.shengwang.cn/doc/rtc/android/get-started/quick-start
+
+声网 Android RTC SDK API 参考入口：
+https://doc.shengwang.cn/api-ref/rtc/android/API/rtc_interface_class
+
+声网 Token 鉴权说明：
+https://doc.shengwang.cn/doc/rtc/android/basic-features/token-authentication
+
+声网频道管理与加入频道相关内容应以当前 SDK 版本的官方文档为准。本项目固定使用：
+
+io.agora.rtc:agora-special-full:4.1.2.2.BASIC
+
+如果升级声网 SDK，请重点复核：
+
+- RtcEngineConfig。
+- ChannelMediaOptions。
+- joinChannel 参数签名。
+- 视频编码配置。
+- Token 回调和 renewToken。
+- RtcEngine.destroy 的线程要求。
+- 混淆规则和 ABI。
+
+
+总结
+----
+
+当前实现已经将声网 RTC 隔离在 core 的 AgoraRtcClient 中，并通过 RtcClient、RtcTokenProvider 和 DefaultCallClient 对 app 提供稳定接口。云信负责决定“谁呼叫谁、是否接听、何时挂断”，声网负责接听后的实时媒体传输。
+
+Demo 可以通过 local.properties 中的 App ID 和 App Certificate 快速联调；正式上线时最重要的改造是把 App Certificate 和 Token Builder 迁移到业务服务端，并对频道、UID 和通话成员做严格鉴权。

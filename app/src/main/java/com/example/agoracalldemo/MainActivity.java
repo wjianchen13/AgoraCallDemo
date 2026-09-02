@@ -2,15 +2,13 @@ package com.example.agoracalldemo;
 
 import android.Manifest;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.TextUtils;
-import android.view.SurfaceView;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.inputmethod.InputMethodManager;
-import android.widget.FrameLayout;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
@@ -22,13 +20,8 @@ import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowInsetsCompat;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-
 import com.example.agoracalldemo.databinding.ActivityMainBinding;
 import com.example.core.call.api.CallClient;
-import com.example.core.call.api.CallClientFactory;
 import com.example.core.call.api.CallListener;
 import com.example.core.call.model.CallError;
 import com.example.core.call.model.CallInviteRequest;
@@ -36,6 +29,10 @@ import com.example.core.call.model.CallSnapshot;
 import com.example.core.call.model.CallState;
 import com.example.core.call.model.CallType;
 import com.example.core.call.model.SignalingLoginRequest;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 public class MainActivity extends AppCompatActivity implements CallListener {
     private enum PendingPermissionAction {
@@ -48,6 +45,7 @@ public class MainActivity extends AppCompatActivity implements CallListener {
     private CallClient callClient;
     private PendingPermissionAction pendingPermissionAction = PendingPermissionAction.NONE;
     private CallInviteRequest pendingCallRequest;
+    private boolean callActivityOpening;
 
     private final ActivityResultLauncher<String[]> permissionLauncher =
             registerForActivityResult(
@@ -70,57 +68,29 @@ public class MainActivity extends AppCompatActivity implements CallListener {
 
         binding.localAccountInput.setText(BuildConfig.YUNXIN_ACCOUNT_ID);
         binding.yunxinTokenInput.setText(BuildConfig.YUNXIN_ACCOUNT_TOKEN);
-        createVideoViews();
-        callClient = CallClientFactory.createDemoClient(
-                getApplicationContext(),
-                BuildConfig.AGORA_APP_ID,
-                BuildConfig.AGORA_APP_CERT,
-                BuildConfig.YUNXIN_APP_KEY
-        );
-        callClient.addListener(this);
+        callClient = ((CallDemoApplication) getApplication()).getCallClient();
         bindActions();
     }
 
-    private void createVideoViews() {
-        SurfaceView remoteView = new SurfaceView(this);
-        binding.remoteVideoContainer.addView(remoteView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
+    @Override
+    protected void onStart() {
+        super.onStart();
+        callClient.addListener(this);
+    }
 
-        SurfaceView localView = new SurfaceView(this);
-        localView.setZOrderMediaOverlay(true);
-        binding.localVideoContainer.addView(localView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        binding.localVideoContainer.setTag(localView);
-        binding.remoteVideoContainer.setTag(remoteView);
+    @Override
+    protected void onStop() {
+        callClient.removeListener(this);
+        super.onStop();
     }
 
     private void bindActions() {
-        callClient.attachLocalVideo((SurfaceView) binding.localVideoContainer.getTag());
-        callClient.attachRemoteVideo((SurfaceView) binding.remoteVideoContainer.getTag());
-
         binding.loginButton.setOnClickListener(view -> loginYunxin());
         binding.logoutButton.setOnClickListener(view -> callClient.logoutSignaling());
         binding.callButton.setOnClickListener(view -> prepareOutgoingCall());
         binding.acceptButton.setOnClickListener(view -> prepareAcceptCall());
         binding.rejectButton.setOnClickListener(view -> callClient.rejectCall());
-        binding.leaveButton.setOnClickListener(view -> callClient.leave());
-        binding.microphoneButton.setOnClickListener(view -> {
-            CallSnapshot snapshot = callClient.getSnapshot();
-            callClient.setMicrophoneEnabled(!snapshot.isMicrophoneEnabled());
-        });
-        binding.cameraButton.setOnClickListener(view -> {
-            CallSnapshot snapshot = callClient.getSnapshot();
-            callClient.setCameraEnabled(!snapshot.isCameraEnabled());
-        });
-        binding.switchCameraButton.setOnClickListener(view -> callClient.switchCamera());
-        binding.speakerButton.setOnClickListener(view -> {
-            CallSnapshot snapshot = callClient.getSnapshot();
-            callClient.setSpeakerEnabled(!snapshot.isSpeakerEnabled());
-        });
+        binding.cancelCallButton.setOnClickListener(view -> callClient.leave());
     }
 
     private void loginYunxin() {
@@ -207,7 +177,7 @@ public class MainActivity extends AppCompatActivity implements CallListener {
         return missing.toArray(new String[0]);
     }
 
-    private void onPermissionsResult(Map<String, Boolean> result) {
+    private void onPermissionsResult(Map<String, Boolean> ignored) {
         PendingPermissionAction action = pendingPermissionAction;
         pendingPermissionAction = PendingPermissionAction.NONE;
         CallType type = action == PendingPermissionAction.START_CALL
@@ -252,32 +222,33 @@ public class MainActivity extends AppCompatActivity implements CallListener {
 
     @Override
     public void onCallSnapshotChanged(CallSnapshot snapshot) {
-        runOnUiThread(() -> render(snapshot));
+        runOnUiThread(() -> {
+            if (binding != null) {
+                render(snapshot);
+            }
+        });
     }
 
     private void render(CallSnapshot snapshot) {
-        binding.statusText.setText(snapshot.getStatusMessage());
-
         CallState state = snapshot.getState();
+        if (shouldShowCallActivity(state)) {
+            openCallActivity();
+            return;
+        }
+        callActivityOpening = false;
+
+        binding.statusText.setText(snapshot.getStatusMessage());
         boolean loggedIn = snapshot.isSignalingLoggedIn();
-        boolean loginScreen = state == CallState.IDLE
+        boolean setupVisible = state == CallState.IDLE
                 || state == CallState.FAILED
                 || state == CallState.LOGGING_IN
                 || state == CallState.READY;
         boolean ringing = state == CallState.RINGING;
-        boolean rtcActive = state == CallState.JOINING
-                || state == CallState.WAITING_REMOTE
-                || state == CallState.CONNECTED
-                || state == CallState.RECONNECTING;
-        boolean callFlow = state == CallState.CALLING
-                || state == CallState.ACCEPTING
-                || state == CallState.PREPARING
-                || rtcActive;
-        boolean video = snapshot.getCallType() == CallType.VIDEO;
+        boolean calling = state == CallState.CALLING;
 
-        binding.setupPanel.setVisibility(loginScreen ? View.VISIBLE : View.GONE);
+        binding.setupPanel.setVisibility(setupVisible ? View.VISIBLE : View.GONE);
         binding.incomingPanel.setVisibility(ringing ? View.VISIBLE : View.GONE);
-        binding.controlPanel.setVisibility(callFlow ? View.VISIBLE : View.GONE);
+        binding.outgoingPanel.setVisibility(calling ? View.VISIBLE : View.GONE);
         binding.callSetupContainer.setVisibility(
                 loggedIn && state == CallState.READY ? View.VISIBLE : View.GONE
         );
@@ -289,37 +260,25 @@ public class MainActivity extends AppCompatActivity implements CallListener {
         binding.localAccountInput.setEnabled(!loggedIn && state != CallState.LOGGING_IN);
         binding.yunxinTokenInput.setEnabled(!loggedIn && state != CallState.LOGGING_IN);
         binding.uidInput.setEnabled(!loggedIn && state != CallState.LOGGING_IN);
-
         binding.incomingTitle.setText(snapshot.getStatusMessage());
-        binding.localVideoContainer.setVisibility(
-                rtcActive && video && snapshot.isCameraEnabled() ? View.VISIBLE : View.GONE
-        );
-        binding.microphoneButton.setVisibility(rtcActive ? View.VISIBLE : View.GONE);
-        binding.speakerButton.setVisibility(rtcActive ? View.VISIBLE : View.GONE);
-        binding.cameraButton.setVisibility(rtcActive && video ? View.VISIBLE : View.GONE);
-        binding.switchCameraButton.setVisibility(rtcActive && video ? View.VISIBLE : View.GONE);
-        binding.leaveButton.setText(state == CallState.CALLING
-                ? R.string.cancel_call
-                : R.string.leave_channel);
+        binding.outgoingTitle.setText(snapshot.getStatusMessage());
+    }
 
-        binding.microphoneButton.setText(snapshot.isMicrophoneEnabled()
-                ? R.string.mic_on
-                : R.string.mic_off);
-        binding.cameraButton.setText(snapshot.isCameraEnabled()
-                ? R.string.camera_on
-                : R.string.camera_off);
-        binding.speakerButton.setText(snapshot.isSpeakerEnabled()
-                ? R.string.speaker_on
-                : R.string.speaker_off);
+    private boolean shouldShowCallActivity(CallState state) {
+        return state == CallState.ACCEPTING
+                || state == CallState.PREPARING
+                || state == CallState.JOINING
+                || state == CallState.WAITING_REMOTE
+                || state == CallState.CONNECTED
+                || state == CallState.RECONNECTING;
+    }
 
-        binding.emptyVideoHint.setText(video
-                ? R.string.video_waiting_hint
-                : R.string.audio_call_hint);
-        binding.emptyVideoHint.setVisibility(
-                rtcActive && (!video || snapshot.getRemoteUid() == 0)
-                        ? View.VISIBLE
-                        : View.GONE
-        );
+    private void openCallActivity() {
+        if (callActivityOpening) {
+            return;
+        }
+        callActivityOpening = true;
+        startActivity(new Intent(this, CallActivity.class));
     }
 
     @Override
@@ -333,10 +292,6 @@ public class MainActivity extends AppCompatActivity implements CallListener {
 
     @Override
     protected void onDestroy() {
-        if (callClient != null) {
-            callClient.removeListener(this);
-            callClient.release();
-        }
         binding = null;
         super.onDestroy();
     }

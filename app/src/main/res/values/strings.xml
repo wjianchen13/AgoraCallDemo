@@ -9,6 +9,7 @@
     <string name="login_yunxin">登录云信</string>
     <string name="logout_yunxin">退出</string>
     <string name="start_call">发起呼叫</string>
+    <string name="calling_peer">正在呼叫对方</string>
     <string name="incoming_call">收到云信来电</string>
     <string name="accept_call">接听</string>
     <string name="reject_call">拒绝</string>
@@ -26,6 +27,7 @@
     <string name="status_idle">请先登录云信账号</string>
     <string name="video_waiting_hint">等待远端视频</string>
     <string name="audio_call_hint">纯语音通话中</string>
+    <string name="call_in_progress">通话中</string>
     <string name="token_demo_warning">云信账号 Token 应由业务服务端提供；声网 App Certificate 和本地 Token Builder 也仅限 Demo。</string>
     <string name="permission_denied">请授予麦克风和摄像头权限后重试</string>
     <string name="invalid_uid">UID 请输入 0～2147483647 的整数</string>
